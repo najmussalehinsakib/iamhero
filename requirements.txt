@@ -1,4 +1,0 @@
-pyTelegramBotAPI
-selenium
-requests
-webdriver-manager
