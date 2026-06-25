@@ -7,7 +7,7 @@ from telebot import types
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 
-# --- ১. হোস্টিং সার্ভার এনভায়রনমেন্ট ভ্যারিয়েবল কনফিগারেশন ---
+# --- ১. হোস্টিং সার্ভার এনভায়রনমেন্ট ভ্যারিয়াবল কনফিগারেশন ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
 
@@ -16,7 +16,7 @@ DB_NAME = "ivasms_bot.db"
 
 # --- ২. ডাটাবেজ ইনিশিয়ালাইজেশন ---
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=10)
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (
                         user_id INTEGER PRIMARY KEY, username TEXT, balance REAL DEFAULT 0.0, status TEXT DEFAULT 'active')''')
@@ -66,17 +66,19 @@ def ivasms_scraping_loop():
     global automation_running
     options = webdriver.ChromeOptions()
     options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
     try:
         driver = webdriver.Chrome(options=options)
         driver.get("https://example-ivasms.com/dashboard")
         last_otp = ""
         while automation_running:
             try:
-                element = driver.find_element(By.XPATH, ivasms_config["target_xpath"])
+                element = driver.find_element(By.開, ivasms_config["target_xpath"])
                 current_otp = element.text
                 if current_otp and current_otp != last_otp:
                     last_otp = current_otp
-                    conn = sqlite3.connect(DB_NAME)
+                    conn = sqlite3.connect(DB_NAME, timeout=10)
                     cursor = conn.cursor()
                     cursor.execute("SELECT order_id, user_id, phone_number FROM orders WHERE status='pending' ORDER BY order_id DESC LIMIT 1")
                     pending_order = cursor.fetchone()
@@ -100,7 +102,7 @@ def ivasms_scraping_loop():
 # ---------------- BOT HANDLERS ----------------
 @bot.message_handler(commands=['start'])
 def start_command(message):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=10)
     cursor = conn.cursor()
     cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (message.from_user.id, message.from_user.username))
     conn.commit()
@@ -110,7 +112,7 @@ def start_command(message):
 @bot.message_handler(commands=['admin'])
 def admin_command(message):
     if message.from_user.id == ADMIN_ID:
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(DB_NAME, timeout=10)
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM numbers WHERE status='available'")
         avail = cursor.fetchone()[0]
@@ -125,6 +127,12 @@ def handle_admin_callbacks(call):
     global automation_running, automation_thread
     if call.from_user.id != ADMIN_ID: return
     
+    # ক্র্যাশ এড়াতে টেলিগ্রাম কলব্যাক রিকোয়েস্ট আনসার করা
+    try:
+        bot.answer_callback_query(call.id)
+    except:
+        pass
+    
     if call.data == "admin_add_number":
         msg = bot.send_message(call.message.chat.id, "📝 নতুন নাম্বার এই ফরম্যাটে দিন:\n`Number,Country,Service,Price`\n\nউদাহরণ:\n`+8801700000000,BANGLADESH,FACEBOOK,25`")
         bot.register_next_step_handler(msg, process_add_number)
@@ -134,7 +142,10 @@ def handle_admin_callbacks(call):
     elif call.data == "ivasms_dashboard":
         status = "RUNNING 🟢" if automation_running else "STOPPED 🔴"
         dashboard_msg = f"🤖 **IVASMS SCRIPT CONTROL**\n----------------------------------------\n📈 Status: {status}\n🎯 Target XPath: `{ivasms_config['target_xpath']}`\n⏱️ Interval: {ivasms_config['refresh_interval']}s\n----------------------------------------"
-        bot.edit_message_text(dashboard_msg, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=get_ivasms_keyboard())
+        try:
+            bot.edit_message_text(dashboard_msg, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=get_ivasms_keyboard())
+        except:
+            bot.send_message(call.message.chat.id, dashboard_msg, parse_mode="Markdown", reply_markup=get_ivasms_keyboard())
     elif call.data == "toggle_script":
         if not automation_running:
             automation_running = True
@@ -143,33 +154,48 @@ def handle_admin_callbacks(call):
             automation_thread.start()
         else:
             automation_running = False
-        handle_admin_callbacks(types.CallbackQuery(call.id, call.from_user, call.message, "ivasms_dashboard", call.chat_instance))
+        
+        status = "RUNNING 🟢" if automation_running else "STOPPED 🔴"
+        dashboard_msg = f"🤖 **IVASMS SCRIPT CONTROL**\n----------------------------------------\n📈 Status: {status}\n🎯 Target XPath: `{ivasms_config['target_xpath']}`\n⏱️ Interval: {ivasms_config['refresh_interval']}s\n----------------------------------------"
+        try:
+            bot.edit_message_text(dashboard_msg, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=get_ivasms_keyboard())
+        except:
+            pass
     elif call.data == "back_to_admin":
         admin_command(call.message)
 
 def process_add_number(message):
+    if message.text.startswith('/'):
+        bot.send_message(message.chat.id, "❌ অপারেশন বাতিল করা হয়েছে।")
+        return
     try:
         parts = message.text.split(",")
-        conn = sqlite3.connect(DB_NAME)
+        if len(parts) < 4:
+            bot.send_message(message.chat.id, "❌ ভুল ফরম্যাট! আবার চেষ্টা করুন বা /admin লিখুন।")
+            return
+        conn = sqlite3.connect(DB_NAME, timeout=10)
         cursor = conn.cursor()
         cursor.execute("INSERT INTO numbers (phone_number, country, service, price) VALUES (?, ?, ?, ?)", (parts[0].strip(), parts[1].strip().upper(), parts[2].strip().upper(), float(parts[3].strip())))
         conn.commit()
         conn.close()
         bot.send_message(message.chat.id, "✅ নাম্বার স্টকে যোগ হয়েছে!")
-    except:
-        bot.send_message(message.chat.id, "❌ ভুল ফরম্যাট!")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ ভুল ফরম্যাট বা এরর: {str(e)}")
 
 def process_add_balance(message):
+    if message.text.startswith('/'):
+        bot.send_message(message.chat.id, "❌ অপারেশন বাতিল করা হয়েছে।")
+        return
     try:
         parts = message.text.split(",")
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(DB_NAME, timeout=10)
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (float(parts[1].strip()), int(parts[0].strip())))
         conn.commit()
         conn.close()
         bot.send_message(message.chat.id, "✅ ব্যালেন্স সফলভাবে যোগ হয়েছে!")
-    except:
-        bot.send_message(message.chat.id, "❌ ভুল ফরম্যাট!")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ ভুল ফরম্যাট বা এরর: {str(e)}")
 
 # ---------------- USER WORKFLOW (COUNTRY -> SERVICE -> NUMBER) ----------------
 @bot.message_handler(func=lambda message: True)
@@ -181,15 +207,20 @@ def handle_user_text(message):
                    types.InlineKeyboardButton("🇺🇸 USA", callback_data="country_USA"))
         bot.send_message(message.chat.id, "⬇️ SELECT COUNTRY:", reply_markup=markup)
     elif message.text == "👤 PROFILE & WALLET":
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(DB_NAME, timeout=10)
         cursor = conn.cursor()
         cursor.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,))
-        bal = cursor.fetchone()[0]
+        res = cursor.fetchone()
+        bal = res[0] if res else 0.0
         conn.close()
         bot.send_message(message.chat.id, f"👤 **PROFILE INFO**\n\n🆔 User ID: `{message.from_user.id}`\n💰 Balance: `{bal:.2f} BDT`", parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("country_"))
 def handle_country_select(call):
+    try:
+        bot.answer_callback_query(call.id)
+    except:
+        pass
     country = call.data.replace("country_", "")
     user_states[call.from_user.id] = {"country": country}
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -200,16 +231,21 @@ def handle_country_select(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("service_"))
 def handle_service_select(call):
+    try:
+        bot.answer_callback_query(call.id)
+    except:
+        pass
     service = call.data.replace("service_", "")
     user_data = user_states.get(call.from_user.id)
     if not user_data: return
 
     country = user_data["country"]
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=10)
     cursor = conn.cursor()
     
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (call.from_user.id,))
-    user_balance = cursor.fetchone()[0]
+    res = cursor.fetchone()
+    user_balance = res[0] if res else 0.0
     
     cursor.execute("SELECT id, phone_number, price FROM numbers WHERE country=? AND service=? AND status='available' LIMIT 1", (country, service))
     num_data = cursor.fetchone()
