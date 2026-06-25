@@ -7,7 +7,8 @@ from telebot import types
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 
-# --- ১. হোস্টিং সার্ভার এনভায়রনমেন্ট ভ্যারিয়াবল কনফিগারেশন ---
+# --- ১. হোস্টিং সার্ভার কনফিগারেশন ---
+# রেলওয়ে ভ্যারিয়েবল কাজ না করলে সরাসরি এখানে আপনার আসল টোকেন ও আইডি বসিয়ে দিন
 BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
 
@@ -16,7 +17,7 @@ DB_NAME = "ivasms_bot.db"
 
 # --- ২. ডাটাবেজ ইনিশিয়ালাইজেশন ---
 def init_db():
-    conn = sqlite3.connect(DB_NAME, timeout=10)
+    conn = sqlite3.connect(DB_NAME, timeout=10) # ডাটাবেজ লক এড়াতে ১০ সেকেন্ড টাইমআউট
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (
                         user_id INTEGER PRIMARY KEY, username TEXT, balance REAL DEFAULT 0.0, status TEXT DEFAULT 'active')''')
@@ -74,7 +75,7 @@ def ivasms_scraping_loop():
         last_otp = ""
         while automation_running:
             try:
-                element = driver.find_element(By.開, ivasms_config["target_xpath"])
+                element = driver.find_element(By.XPATH, ivasms_config["target_xpath"])
                 current_otp = element.text
                 if current_otp and current_otp != last_otp:
                     last_otp = current_otp
@@ -95,39 +96,48 @@ def ivasms_scraping_loop():
             time.sleep(ivasms_config["refresh_interval"])
             driver.refresh()
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ Automation Stopped: {str(e)}")
+        try:
+            bot.send_message(ADMIN_ID, f"❌ Automation Stopped: {str(e)}")
+        except:
+            pass
     finally:
         automation_running = False
 
 # ---------------- BOT HANDLERS ----------------
 @bot.message_handler(commands=['start'])
 def start_command(message):
-    conn = sqlite3.connect(DB_NAME, timeout=10)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (message.from_user.id, message.from_user.username))
-    conn.commit()
-    conn.close()
-    bot.send_message(message.chat.id, "👋 Welcome to NHBD NUMBER BOT!\nUse the menu below to navigate.", reply_markup=get_user_keyboard())
+    try:
+        conn = sqlite3.connect(DB_NAME, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (message.from_user.id, message.from_user.username))
+        conn.commit()
+        conn.close()
+        bot.send_message(message.chat.id, "👋 Welcome to NHBD NUMBER BOT!\nUse the menu below to navigate.", reply_markup=get_user_keyboard())
+    except Exception as e:
+        print(f"Error in start: {e}")
 
 @bot.message_handler(commands=['admin'])
 def admin_command(message):
     if message.from_user.id == ADMIN_ID:
-        conn = sqlite3.connect(DB_NAME, timeout=10)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM numbers WHERE status='available'")
-        avail = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM orders WHERE status='completed'")
-        otps = cursor.fetchone()[0]
-        conn.close()
-        metrics = f"📊 **LIVE BOT METRICS:**\n\n📦 Available Numbers: `{avail}`\n🔏 Total Successful OTPs: `{otps}`"
-        bot.send_message(message.chat.id, metrics, parse_mode="Markdown", reply_markup=get_admin_keyboard())
+        try:
+            conn = sqlite3.connect(DB_NAME, timeout=10)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM numbers WHERE status='available'")
+            avail = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM orders WHERE status='completed'")
+            otps = cursor.fetchone()[0]
+            conn.close()
+            metrics = f"📊 **LIVE BOT METRICS:**\n\n📦 Available Numbers: `{avail}`\n🔏 Total Successful OTPs: `{otps}`"
+            bot.send_message(message.chat.id, metrics, parse_mode="Markdown", reply_markup=get_admin_keyboard())
+        except Exception as e:
+            bot.send_message(message.chat.id, f"❌ এডমিন প্যানেল লোড এরর: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data in ["ivasms_dashboard", "toggle_script", "set_cookie", "set_xpath", "back_to_admin"])
 def handle_admin_callbacks(call):
     global automation_running, automation_thread
     if call.from_user.id != ADMIN_ID: return
     
-    # ক্র্যাশ এড়াতে টেলিগ্রাম কলব্যাক রিকোয়েস্ট আনসার করা
+    # বোতামের লোডিং অ্যানিমেশন বন্ধ করতে রেসপন্স করা
     try:
         bot.answer_callback_query(call.id)
     except:
@@ -155,6 +165,7 @@ def handle_admin_callbacks(call):
         else:
             automation_running = False
         
+        # রিকারসিভ লুপ বাদ দিয়ে সরাসরি ড্যাশবোর্ড মেসেজ টেক্সট আপডেট
         status = "RUNNING 🟢" if automation_running else "STOPPED 🔴"
         dashboard_msg = f"🤖 **IVASMS SCRIPT CONTROL**\n----------------------------------------\n📈 Status: {status}\n🎯 Target XPath: `{ivasms_config['target_xpath']}`\n⏱️ Interval: {ivasms_config['refresh_interval']}s\n----------------------------------------"
         try:
@@ -165,14 +176,9 @@ def handle_admin_callbacks(call):
         admin_command(call.message)
 
 def process_add_number(message):
-    if message.text.startswith('/'):
-        bot.send_message(message.chat.id, "❌ অপারেশন বাতিল করা হয়েছে।")
-        return
+    if message.text.startswith('/'): return
     try:
         parts = message.text.split(",")
-        if len(parts) < 4:
-            bot.send_message(message.chat.id, "❌ ভুল ফরম্যাট! আবার চেষ্টা করুন বা /admin লিখুন।")
-            return
         conn = sqlite3.connect(DB_NAME, timeout=10)
         cursor = conn.cursor()
         cursor.execute("INSERT INTO numbers (phone_number, country, service, price) VALUES (?, ?, ?, ?)", (parts[0].strip(), parts[1].strip().upper(), parts[2].strip().upper(), float(parts[3].strip())))
@@ -180,12 +186,10 @@ def process_add_number(message):
         conn.close()
         bot.send_message(message.chat.id, "✅ নাম্বার স্টকে যোগ হয়েছে!")
     except Exception as e:
-        bot.send_message(message.chat.id, f"❌ ভুল ফরম্যাট বা এরর: {str(e)}")
+        bot.send_message(message.chat.id, f"❌ ভুল ফরম্যাট বা এরর: {e}")
 
 def process_add_balance(message):
-    if message.text.startswith('/'):
-        bot.send_message(message.chat.id, "❌ অপারেশন বাতিল করা হয়েছে।")
-        return
+    if message.text.startswith('/'): return
     try:
         parts = message.text.split(",")
         conn = sqlite3.connect(DB_NAME, timeout=10)
@@ -195,9 +199,9 @@ def process_add_balance(message):
         conn.close()
         bot.send_message(message.chat.id, "✅ ব্যালেন্স সফলভাবে যোগ হয়েছে!")
     except Exception as e:
-        bot.send_message(message.chat.id, f"❌ ভুল ফরম্যাট বা এরর: {str(e)}")
+        bot.send_message(message.chat.id, f"❌ ভুল ফরম্যাট বা এরর: {e}")
 
-# ---------------- USER WORKFLOW (COUNTRY -> SERVICE -> NUMBER) ----------------
+# ---------------- USER WORKFLOW ----------------
 @bot.message_handler(func=lambda message: True)
 def handle_user_text(message):
     if message.text == "📱 GET NUMBER":
@@ -207,13 +211,18 @@ def handle_user_text(message):
                    types.InlineKeyboardButton("🇺🇸 USA", callback_data="country_USA"))
         bot.send_message(message.chat.id, "⬇️ SELECT COUNTRY:", reply_markup=markup)
     elif message.text == "👤 PROFILE & WALLET":
-        conn = sqlite3.connect(DB_NAME, timeout=10)
-        cursor = conn.cursor()
-        cursor.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,))
-        res = cursor.fetchone()
-        bal = res[0] if res else 0.0
-        conn.close()
-        bot.send_message(message.chat.id, f"👤 **PROFILE INFO**\n\n🆔 User ID: `{message.from_user.id}`\n💰 Balance: `{bal:.2f} BDT`", parse_mode="Markdown")
+        try:
+            conn = sqlite3.connect(DB_NAME, timeout=10)
+            cursor = conn.cursor()
+            cursor.execute("SELECT balance FROM users WHERE user_id=?", (message.from_user.id,))
+            res = cursor.fetchone()
+            bal = res[0] if res else 0.0
+            conn.close()
+            bot.send_message(message.chat.id, f"👤 **PROFILE INFO**\n\n🆔 User ID: `{message.from_user.id}`\n💰 Balance: `{bal:.2f} BDT`", parse_mode="Markdown")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"❌ প্রোফাইল লোড করতে সমস্যা হয়েছে।")
+    else:
+        bot.send_message(message.chat.id, "💡 অনুগ্রহ করে নিচের মেনু বাটনগুলো ব্যবহার করুন।")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("country_"))
 def handle_country_select(call):
@@ -227,7 +236,10 @@ def handle_country_select(call):
     markup.add(types.InlineKeyboardButton("🔵 FACEBOOK", callback_data="service_FACEBOOK"),
                types.InlineKeyboardButton("🟣 INSTAGRAM", callback_data="service_INSTAGRAM"),
                types.InlineKeyboardButton("🟢 WHATSAPP", callback_data="service_WHATSAPP"))
-    bot.edit_message_text(f"🌍 Country: **{country}**\n\n⬇️ SELECT SERVICE:", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+    try:
+        bot.edit_message_text(f"🌍 Country: **{country}**\n\n⬇️ SELECT SERVICE:", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+    except:
+        pass
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("service_"))
 def handle_service_select(call):
@@ -240,29 +252,32 @@ def handle_service_select(call):
     if not user_data: return
 
     country = user_data["country"]
-    conn = sqlite3.connect(DB_NAME, timeout=10)
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT balance FROM users WHERE user_id=?", (call.from_user.id,))
-    res = cursor.fetchone()
-    user_balance = res[0] if res else 0.0
-    
-    cursor.execute("SELECT id, phone_number, price FROM numbers WHERE country=? AND service=? AND status='available' LIMIT 1", (country, service))
-    num_data = cursor.fetchone()
-    
-    if num_data:
-        num_id, phone, price = num_data
-        if user_balance >= price:
-            cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (price, call.from_user.id))
-            cursor.execute("UPDATE numbers SET status='active' WHERE id=?", (num_id,))
-            cursor.execute("INSERT INTO orders (user_id, phone_number, country, service, price) VALUES (?, ?, ?, ?, ?)", (call.from_user.id, phone, country, service, price))
-            conn.commit()
-            bot.edit_message_text(f"📱 **NUMBER READY!**\n\n🌍 Country: `{country}`\n🛠 Service: `{service}`\n📞 Number: `{phone}`\n💰 Cost: `{price} BDT`\n\nনাম্বারটি ব্যবহার করে ওটিপি রিকোয়েস্ট পাঠান। ওটিপি আসা মাত্র এখানে চলে আসবে। ⏳", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+    try:
+        conn = sqlite3.connect(DB_NAME, timeout=10)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT balance FROM users WHERE user_id=?", (call.from_user.id,))
+        res = cursor.fetchone()
+        user_balance = res[0] if res else 0.0
+        
+        cursor.execute("SELECT id, phone_number, price FROM numbers WHERE country=? AND service=? AND status='available' LIMIT 1", (country, service))
+        num_data = cursor.fetchone()
+        
+        if num_data:
+            num_id, phone, price = num_data
+            if user_balance >= price:
+                cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (price, call.from_user.id))
+                cursor.execute("UPDATE numbers SET status='active' WHERE id=?", (num_id,))
+                cursor.execute("INSERT INTO orders (user_id, phone_number, country, service, price) VALUES (?, ?, ?, ?, ?)", (call.from_user.id, phone, country, service, price))
+                conn.commit()
+                bot.edit_message_text(f"📱 **NUMBER READY!**\n\n🌍 Country: `{country}`\n🛠 Service: `{service}`\n📞 Number: `{phone}`\n💰 Cost: `{price} BDT`\n\nনাম্বারটি ব্যবহার করে ওটিপি রিকোয়েস্ট পাঠান। ওটিপি আসা মাত্র এখানে চলে আসবে। ⏳", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            else:
+                bot.edit_message_text(f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! নাম্বারটির মূল্য `{price} BDT`। আপনার বর্তমান ব্যালেন্স `{user_balance} BDT`।", call.message.chat.id, call.message.message_id)
         else:
-            bot.edit_message_text(f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! নাম্বারটির মূল্য `{price} BDT`। আপনার বর্তমান ব্যালেন্স `{user_balance} BDT`।", call.message.chat.id, call.message.message_id)
-    else:
-        bot.edit_message_text(f"❌ দুঃখিত, এই মুহূর্তে **{country}** এর **{service}** সার্ভিসের কোনো নাম্বার স্টকে নেই।", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-    conn.close()
+            bot.edit_message_text(f"❌ দুঃখিত, এই মুহূর্তে **{country}** এর **{service}** সার্ভিসের কোনো নাম্বার স্টকে নেই।", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        conn.close()
+    except Exception as e:
+        print(f"Error in service select: {e}")
 
 if __name__ == "__main__":
     print("[+] NHBD BOT IS FULLY OPERATIONAL...")
